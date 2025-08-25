@@ -4,6 +4,7 @@ Ventana principal de la aplicación
 
 import tkinter as tk
 import logging
+import threading
 from tkinter import ttk, messagebox, scrolledtext
 from .components.connection_form import ConnectionForm
 from .components.table_selector import TableSelector
@@ -11,7 +12,7 @@ from .components.log_viewer import LogViewer
 from ..database.connection import DatabaseConnection
 from ..database.audit_manager import AuditManager
 from ..utils.logger import GUILogHandler
-import threading
+
 
 class MainWindow:
     """Ventana principal de la aplicación"""
