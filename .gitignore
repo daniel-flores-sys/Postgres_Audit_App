@@ -1,0 +1,10 @@
+/env
+/keys
+/logs
+/src/__pycache__
+/src/gui/__pycache__
+/src/components/__pycache__
+/src/security/__pycache__
+/src/utils/__pycache__
+/src/env/__pycache__
+.env

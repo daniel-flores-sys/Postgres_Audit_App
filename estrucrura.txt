@@ -1,0 +1,54 @@
+postgres_audit_app/
+│
+├── main.py                     # Punto de entrada de la aplicación
+├── requirements.txt            # Dependencias del proyecto
+├── .env.example               # Ejemplo de variables de entorno
+├── README.md                  # Documentación del proyecto
+│
+├── src/                       # Código fuente
+│   ├── __init__.py
+│   ├── gui/                   # Interfaz gráfica
+│   │   ├── __init__.py
+│   │   ├── main_window.py     # Ventana principal
+│   │   ├── components/        # Componentes reutilizables
+│   │   │   ├── __init__.py
+│   │   │   ├── table_selector.py
+│   │   │   ├── log_viewer.py
+│   │   │   └── connection_form.py
+│   │   └── styles/            # Estilos y constantes de UI
+│   │       ├── __init__.py
+│   │       └── constants.py
+│   │
+│   ├── database/              # Manejo de base de datos
+│   │   ├── __init__.py
+│   │   ├── connection.py      # Conexión a PostgreSQL
+│   │   ├── audit_manager.py   # Gestión de auditoría
+│   │   └── queries/           # Consultas SQL
+│   │       ├── __init__.py
+│   │       ├── audit_functions.py
+│   │       └── table_operations.py
+│   │
+│   ├── security/              # Manejo de encriptación
+│   │   ├── __init__.py
+│   │   ├── encryption.py      # Encriptación asimétrica
+│   │   └── key_manager.py     # Gestión de llaves
+│   │
+│   └── utils/                 # Utilidades
+│       ├── __init__.py
+│       ├── logger.py          # Sistema de logging
+│       ├── config.py          # Configuraciones
+│       └── exceptions.py      # Excepciones personalizadas
+│
+├── keys/                      # Llaves de encriptación
+│   ├── private_key.pem
+│   ├── public_key.pem
+│   └── .gitignore            # No subir las llaves al repositorio
+│
+├── logs/                      # Archivos de log
+│   └── .gitignore
+│
+└── tests/                     # Pruebas unitarias
+    ├── __init__.py
+    ├── test_database.py
+    ├── test_encryption.py
+    └── test_gui.py
