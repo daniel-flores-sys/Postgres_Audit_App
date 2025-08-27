@@ -136,12 +136,10 @@ class AuditManager:
             return []
     
     def _get_audit_table_name(self, table_name):
-        """Generar nombre de tabla de auditoría"""
-        if '.' in table_name:
-            schema, table = table_name.split('.')
-            return f"{schema}.aud_{table}"
-        else:
-            return f"aud_{table_name}"
+        """Generar nombre de tabla de auditoría encriptado"""
+        key = self.audit_functions._get_encryption_key()
+        enc_table_name = self.audit_functions._encrypt_name(table_name, key)
+        return f"aud_{enc_table_name}"
     
     def _get_sensitive_fields(self, table_name):
         """Obtener campos sensibles que deben encriptarse"""

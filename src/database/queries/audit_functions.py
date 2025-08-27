@@ -4,6 +4,9 @@ Funciones SQL para crear auditorías en PostgreSQL
 
 import logging
 from ...utils.exceptions import AuditCreationError
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import base64
 
 class AuditFunctions:
     """Funciones para crear estructuras de auditoría en PostgreSQL"""
@@ -116,102 +119,122 @@ class AuditFunctions:
         except Exception as e:
             raise AuditCreationError(f"Error obteniendo estructura de {table_name}: {str(e)}")
     
-    def create_audit_table(self, original_table, audit_table_name, table_structure):
-        """Crear tabla de auditoría"""
-        try:
-            if '.' in original_table:
-                schema, table = original_table.split('.', 1)
-            else:
-                schema = 'public'
-                table = original_table
+    def _get_encryption_key(self):
+        """Obtener la clave de encriptación desde la base de datos"""
+        query = "SELECT clave FROM clave_secreta LIMIT 1"
+        result = self.db_connection.execute_query(query)
+        if result and result[0].get('clave'):
+            return result[0]['clave']
+        raise AuditCreationError("No se encontró clave de encriptación en clave_secreta")
 
-            # Eliminar tabla de auditoría si existe
+    def _encrypt_name(self, name, key):
+        """Encriptar nombre usando AES (simétrico) y base64 seguro para identificadores SQL"""
+        key_bytes = key.encode('utf-8')[:32]
+        iv = b'\x00' * 16
+        cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv))
+        encryptor = cipher.encryptor()
+        pad_len = 16 - (len(name.encode('utf-8')) % 16)
+        padded = name.encode('utf-8') + bytes([pad_len] * pad_len)
+        encrypted = encryptor.update(padded) + encryptor.finalize()
+        # Base64 estándar y solo caracteres válidos para identificadores
+        b64 = base64.b64encode(encrypted).decode('utf-8')
+        # Reemplazar caracteres inválidos por guión bajo
+        safe = ''.join(c if c.isalnum() else '_' for c in b64)
+        # Opcional: agregar prefijo para evitar que empiece por número
+        if not safe[0].isalpha():
+            safe = 'a_' + safe
+        return safe
+
+    def create_audit_table(self, original_table, audit_table_name=None, table_structure=None):
+        """Crear tabla de auditoría con nombres encriptados"""
+        try:
+            key = self._get_encryption_key()
+            enc_table_name = self._encrypt_name(original_table, key)
+            audit_table_name = f"aud_{enc_table_name}"
+
+            # Todas las columnas como BYTEA
+            columns = []
+            for column in table_structure:
+                enc_col_name = self._encrypt_name(column['column_name'], key)
+                col_def = f"{enc_col_name} BYTEA"
+                columns.append(col_def)
+
+            # Campos de auditoría también como BYTEA
+            for extra in ['usuario_accion', 'fecha_accion', 'accion_sql']:
+                enc_extra = self._encrypt_name(extra, key)
+                columns.append(f"{enc_extra} BYTEA")
+
+            columns_def = ',\n    '.join(columns)
+
             drop_query = f"DROP TABLE IF EXISTS {audit_table_name}"
             self.db_connection.execute_query(drop_query, fetch_results=False)
 
-            # Construir definición de columnas
-            columns_def = self._build_column_definitions(table_structure)
-
-            create_query = f"""
-                CREATE TABLE {audit_table_name} (
-                    {columns_def}
-                    usuario_accion VARCHAR(100),
-                    fecha_accion TIMESTAMP DEFAULT NOW(),
-                    accion_sql VARCHAR(20)
-                )
-            """
-
+            create_query = f"CREATE TABLE {audit_table_name} (\n    {columns_def}\n)"
             self.db_connection.execute_query(create_query, fetch_results=False)
             self.logger.info(f"Tabla de auditoría creada: {audit_table_name}")
 
         except Exception as e:
-            raise AuditCreationError(f"Error creando tabla de auditoría {audit_table_name}: {str(e)}")
-    
-    def _build_column_definitions(self, table_structure):
-        """Construir definiciones de columnas"""
-        columns = []
+            raise AuditCreationError(f"Error creando tabla de auditoría: {str(e)}")
 
-        for column in table_structure:
-            col_name = column['column_name']
-            data_type = column['data_type']
-
-            # Construir tipo completo
-            if data_type in ('character varying', 'varchar', 'character', 'char'):
-                max_length = column['character_maximum_length']
-                if max_length:
-                    col_def = f"{col_name} {data_type}({max_length})"
-                else:
-                    col_def = f"{col_name} {data_type}(255)"
-
-            elif data_type == 'numeric':
-                precision = column['numeric_precision'] or 10
-                scale = column['numeric_scale'] or 0
-                col_def = f"{col_name} {data_type}({precision},{scale})"
-
-            else:
-                col_def = f"{col_name} {data_type}"
-
-            columns.append(col_def)
-
-        return ',\n    '.join(columns) + ',\n    '
-    
-    def create_audit_function(self, table_name, audit_table_name):
-        """Crear función de trigger para auditoría"""
+    def create_audit_function(self, table_name, audit_table_name=None):
+        """Crear función de trigger para auditoría con nombres encriptados"""
         try:
-            if '.' in table_name:
-                schema, table = table_name.split('.', 1)
-            else:
-                schema = 'public'
-                table = table_name
-            function_name = f"{schema}.{table}_audit"
+            key = self._get_encryption_key()
+            enc_table_name = self._encrypt_name(table_name, key)
+            audit_table_name = f"aud_{enc_table_name}"
+            function_name = f"{enc_table_name}_audit"
 
-            # Eliminar función si existe
+            # Obtener estructura de la tabla original
+            table_structure = self.get_table_structure(table_name)
+
+            # Generar lista de campos y valores encriptados
+            encrypted_fields = []
+            for column in table_structure:
+                orig_col = column['column_name']
+                enc_col = self._encrypt_name(orig_col, key)
+                encrypted_fields.append(f"pgp_sym_encrypt(NEW.{orig_col}::TEXT, key)")
+
+            # Campos de auditoría
+            enc_usuario = self._encrypt_name('usuario_accion', key)
+            enc_fecha = self._encrypt_name('fecha_accion', key)
+            enc_accion = self._encrypt_name('accion_sql', key)
+
+            encrypted_fields.append(f"pgp_sym_encrypt(SESSION_USER::TEXT, key)")
+            encrypted_fields.append(f"pgp_sym_encrypt(NOW()::TEXT, key)")
+            encrypted_fields.append(f"pgp_sym_encrypt(TG_OP, key)")
+
+            values_str = ',\n                            '.join(encrypted_fields)
+
             drop_function_query = f"DROP FUNCTION IF EXISTS {function_name}()"
             self.db_connection.execute_query(drop_function_query, fetch_results=False)
 
-            # Crear función de trigger
             function_query = f"""
                 CREATE OR REPLACE FUNCTION {function_name}()
                 RETURNS TRIGGER AS $$
+                DECLARE
+                    key TEXT;
                 BEGIN
+                    SELECT clave INTO key FROM clave_secreta LIMIT 1;
                     IF TG_OP = 'INSERT' THEN
-                        INSERT INTO {audit_table_name}
-                        SELECT NEW.*, SESSION_USER, NOW(), 'INSERT';
+                        INSERT INTO {audit_table_name} VALUES (
+                            {values_str}
+                        );
                         RETURN NEW;
                     ELSIF TG_OP = 'UPDATE' THEN
-                        INSERT INTO {audit_table_name}
-                        SELECT NEW.*, SESSION_USER, NOW(), 'UPDATE';
+                        INSERT INTO {audit_table_name} VALUES (
+                            {values_str}
+                        );
                         RETURN NEW;
                     ELSIF TG_OP = 'DELETE' THEN
-                        INSERT INTO {audit_table_name}
-                        SELECT OLD.*, SESSION_USER, NOW(), 'DELETE';
+                        INSERT INTO {audit_table_name} VALUES (
+                            {values_str.replace('NEW.', 'OLD.')}
+                        );
                         RETURN OLD;
                     END IF;
                     RETURN NULL;
                 END;
                 $$ LANGUAGE plpgsql;
             """
-
             self.db_connection.execute_query(function_query, fetch_results=False)
             self.logger.info(f"Función de auditoría creada: {function_name}")
 
@@ -221,19 +244,14 @@ class AuditFunctions:
     def create_audit_triggers(self, table_name):
         """Crear triggers de auditoría"""
         try:
-            if '.' in table_name:
-                schema, table = table_name.split('.', 1)
-            else:
-                schema = 'public'
-                table = table_name
-            function_name = f"{schema}.{table}_audit"
+            key = self._get_encryption_key()
+            enc_table_name = self._encrypt_name(table_name, key)
+            function_name = f"{enc_table_name}_audit"
 
-        # Nombres de triggers
-            insert_trigger = f"{table}_audit_insert"
-            update_trigger = f"{table}_audit_update"
-            delete_trigger = f"{table}_audit_delete"
+            insert_trigger = f"{table_name}_audit_insert"
+            update_trigger = f"{table_name}_audit_update"
+            delete_trigger = f"{table_name}_audit_delete"
 
-            # Eliminar triggers existentes
             drop_triggers = [
                 f"DROP TRIGGER IF EXISTS {insert_trigger} ON {table_name}",
                 f"DROP TRIGGER IF EXISTS {update_trigger} ON {table_name}",
@@ -243,7 +261,6 @@ class AuditFunctions:
             for drop_query in drop_triggers:
                 self.db_connection.execute_query(drop_query, fetch_results=False)
 
-            # Crear triggers
             triggers = [
                 f"""
                 CREATE TRIGGER {insert_trigger}
@@ -293,10 +310,11 @@ class AuditFunctions:
     def drop_audit_function(self, table_name):
         """Eliminar función de auditoría"""
         try:
-            schema, table = table_name.split('.')
-            function_name = f"{schema}.{table}_audit"
+            key = self._get_encryption_key()
+            enc_table_name = self._encrypt_name(table_name, key)
+            function_name = f"{enc_table_name}_audit"
             
-            drop_query = f"DROP FUNCTION IF EXISTS {function_name}()"
+            drop_query = f"DROP FUNCTION IF EXISTS {function_name}() CASCADE"
             self.db_connection.execute_query(drop_query, fetch_results=False)
             
             self.logger.info(f"Función eliminada: {function_name}")
