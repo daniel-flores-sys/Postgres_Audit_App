@@ -7,6 +7,7 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from ..utils.exceptions import DatabaseConnectionError
 import logging
+from typing import List
 
 class DatabaseConnection:
     """Manejador de conexiones PostgreSQL"""
@@ -98,51 +99,29 @@ class DatabaseConnection:
             self.logger.error(error_msg)
             raise DatabaseConnectionError(error_msg)
     
-    def get_tables(self):
-        """Obtener lista de tablas del esquema actual"""
+    def get_tables(self) -> List[str]:
+        """Obtener tablas de PostgreSQL excluyendo las de auditoría"""
+        query = """
+        SELECT tablename
+        FROM pg_tables 
+        WHERE schemaname = %s
+          AND tablename NOT LIKE 'aud_%%'
+          AND tablename NOT LIKE 'pg_%%'
+        ORDER BY tablename
+        """
         try:
-            query = """
-                SELECT schemaname, tablename,
-                       schemaname||'.'||tablename as nombre 
-                FROM pg_tables 
-                WHERE schemaname = %s
-                AND tablename NOT LIKE 'aud_%'
-                ORDER BY tablename
-            """
-            results = self.execute_query(query, (self.config.db_schema,))
-            
-            if not results:
-                self.logger.warning(f"No se encontraron tablas en el esquema: {self.config.db_schema}")
-                return []
-            
-            # Verificar estructura del resultado
-            self.logger.debug(f"Estructura del primer resultado: {dict(results[0]) if results else 'Sin resultados'}")
-            
-            # Extraer nombres de tablas
-            tables = []
-            for row in results:
-                try:
-                    if isinstance(row, dict) and 'nombre' in row:
-                        tables.append(row['nombre'])
-                    elif hasattr(row, 'nombre'):
-                        tables.append(row.nombre)
-                    else:
-                        # Fallback: construir nombre manualmente
-                        schema = row['schemaname'] if isinstance(row, dict) else row[0]
-                        table = row['tablename'] if isinstance(row, dict) else row[1]
-                        tables.append(f"{schema}.{table}")
-                except (IndexError, KeyError, TypeError) as e:
-                    self.logger.error(f"Error procesando fila: {row}, Error: {str(e)}")
-                    continue
-            
-            self.logger.info(f"Encontradas {len(tables)} tablas en esquema {self.config.db_schema}")
-            return tables
-            
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, (self.config.db_schema,))
+                    result = cursor.fetchall()
+            if result:
+                tables = [row['tablename'] if isinstance(row, dict) else row[0] for row in result]
+                self.logger.info(f"Encontradas {len(tables)} tablas en esquema '{self.config.db_schema}'")
+                return tables
+            return []
         except Exception as e:
-            error_msg = f"Error obteniendo tablas: {str(e)}"
-            self.logger.error(error_msg)
-            # Intentar consulta alternativa más simple
-            return self._get_tables_fallback()
+            self.logger.error(f"Error obteniendo tablas: {e}")
+            return []
     
     def _get_tables_fallback(self):
         """Método alternativo para obtener tablas si falla el principal"""
@@ -159,27 +138,30 @@ class DatabaseConnection:
             """
             results = self.execute_query(query, (self.config.db_schema,))
             
+            self.logger.debug(f"Resultados de consulta alternativa: {results}")
+            
             tables = []
             for row in results:
+                self.logger.debug(f"Procesando fila alternativa: {row}")
                 try:
                     if isinstance(row, dict) and 'table_name' in row:
                         table_name = row['table_name']
-                    elif hasattr(row, 'table_name'):
-                        table_name = row.table_name
+                    elif isinstance(row, dict):
+                        table_name = next(iter(row.values()))
                     else:
-                        table_name = row[0]
+                        self.logger.error(f"Fila inesperada (no dict): {row}")
+                        continue
                     
-                    # Agregar esquema al nombre
                     full_name = f"{self.config.db_schema}.{table_name}"
                     tables.append(full_name)
                     
-                except (IndexError, KeyError, TypeError) as e:
+                except Exception as e:
                     self.logger.error(f"Error procesando fila alternativa: {row}, Error: {str(e)}")
                     continue
-            
+        
             self.logger.info(f"Método alternativo encontró {len(tables)} tablas")
             return tables
-            
+        
         except Exception as e:
             error_msg = f"Error en método alternativo para obtener tablas: {str(e)}"
             self.logger.error(error_msg)

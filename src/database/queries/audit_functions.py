@@ -96,8 +96,12 @@ class AuditFunctions:
     def get_table_structure(self, table_name):
         """Obtener estructura de una tabla"""
         try:
-            schema, table = table_name.split('.')
-            
+            if '.' in table_name:
+                schema, table = table_name.split('.', 1)
+            else:
+                schema = 'public'  # O el esquema por defecto de tu config
+                table = table_name
+
             query = """
                 SELECT column_name, data_type, character_maximum_length, 
                        numeric_precision, numeric_scale, is_nullable
@@ -105,40 +109,29 @@ class AuditFunctions:
                 WHERE table_schema = %s AND table_name = %s
                 ORDER BY ordinal_position
             """
-            
+
             result = self.db_connection.execute_query(query, (schema, table))
             return result
-            
+
         except Exception as e:
             raise AuditCreationError(f"Error obteniendo estructura de {table_name}: {str(e)}")
     
     def create_audit_table(self, original_table, audit_table_name, table_structure):
         """Crear tabla de auditoría"""
         try:
-            schema, table = original_table.split('.')
-            
+            if '.' in original_table:
+                schema, table = original_table.split('.', 1)
+            else:
+                schema = 'public'
+                table = original_table
+
             # Eliminar tabla de auditoría si existe
             drop_query = f"DROP TABLE IF EXISTS {audit_table_name}"
             self.db_connection.execute_query(drop_query, fetch_results=False)
-            
-            # Usar función para obtener definición de columnas
-            create_query = f"""
-                CREATE TABLE {audit_table_name} AS 
-                SELECT get_table_columns('{schema}', '{table}') as column_definition;
-                
-                DROP TABLE {audit_table_name};
-                
-                CREATE TABLE {audit_table_name} (
-                """ + self._build_column_definitions(table_structure) + """
-                    usuario_accion VARCHAR(100),
-                    fecha_accion TIMESTAMP DEFAULT NOW(),
-                    accion_sql VARCHAR(20)
-                );
-            """
-            
-            # Método simplificado
+
+            # Construir definición de columnas
             columns_def = self._build_column_definitions(table_structure)
-            
+
             create_query = f"""
                 CREATE TABLE {audit_table_name} (
                     {columns_def}
@@ -147,22 +140,21 @@ class AuditFunctions:
                     accion_sql VARCHAR(20)
                 )
             """
-            
+
             self.db_connection.execute_query(create_query, fetch_results=False)
-            
             self.logger.info(f"Tabla de auditoría creada: {audit_table_name}")
-            
+
         except Exception as e:
             raise AuditCreationError(f"Error creando tabla de auditoría {audit_table_name}: {str(e)}")
     
     def _build_column_definitions(self, table_structure):
         """Construir definiciones de columnas"""
         columns = []
-        
+
         for column in table_structure:
             col_name = column['column_name']
             data_type = column['data_type']
-            
+
             # Construir tipo completo
             if data_type in ('character varying', 'varchar', 'character', 'char'):
                 max_length = column['character_maximum_length']
@@ -170,29 +162,33 @@ class AuditFunctions:
                     col_def = f"{col_name} {data_type}({max_length})"
                 else:
                     col_def = f"{col_name} {data_type}(255)"
-                    
+
             elif data_type == 'numeric':
                 precision = column['numeric_precision'] or 10
                 scale = column['numeric_scale'] or 0
                 col_def = f"{col_name} {data_type}({precision},{scale})"
-                
+
             else:
                 col_def = f"{col_name} {data_type}"
-            
+
             columns.append(col_def)
-        
-        return ',\n                    '.join(columns) + ',\n                    '
+
+        return ',\n    '.join(columns) + ',\n    '
     
     def create_audit_function(self, table_name, audit_table_name):
         """Crear función de trigger para auditoría"""
         try:
-            schema, table = table_name.split('.')
+            if '.' in table_name:
+                schema, table = table_name.split('.', 1)
+            else:
+                schema = 'public'
+                table = table_name
             function_name = f"{schema}.{table}_audit"
-            
+
             # Eliminar función si existe
             drop_function_query = f"DROP FUNCTION IF EXISTS {function_name}()"
             self.db_connection.execute_query(drop_function_query, fetch_results=False)
-            
+
             # Crear función de trigger
             function_query = f"""
                 CREATE OR REPLACE FUNCTION {function_name}()
@@ -215,35 +211,38 @@ class AuditFunctions:
                 END;
                 $$ LANGUAGE plpgsql;
             """
-            
+
             self.db_connection.execute_query(function_query, fetch_results=False)
-            
             self.logger.info(f"Función de auditoría creada: {function_name}")
-            
+
         except Exception as e:
             raise AuditCreationError(f"Error creando función de auditoría: {str(e)}")
     
     def create_audit_triggers(self, table_name):
         """Crear triggers de auditoría"""
         try:
-            schema, table = table_name.split('.')
+            if '.' in table_name:
+                schema, table = table_name.split('.', 1)
+            else:
+                schema = 'public'
+                table = table_name
             function_name = f"{schema}.{table}_audit"
-            
-            # Nombres de triggers
+
+        # Nombres de triggers
             insert_trigger = f"{table}_audit_insert"
-            update_trigger = f"{table}_audit_update" 
+            update_trigger = f"{table}_audit_update"
             delete_trigger = f"{table}_audit_delete"
-            
+
             # Eliminar triggers existentes
             drop_triggers = [
                 f"DROP TRIGGER IF EXISTS {insert_trigger} ON {table_name}",
                 f"DROP TRIGGER IF EXISTS {update_trigger} ON {table_name}",
                 f"DROP TRIGGER IF EXISTS {delete_trigger} ON {table_name}"
             ]
-            
+
             for drop_query in drop_triggers:
                 self.db_connection.execute_query(drop_query, fetch_results=False)
-            
+
             # Crear triggers
             triggers = [
                 f"""
@@ -262,12 +261,12 @@ class AuditFunctions:
                     FOR EACH ROW EXECUTE FUNCTION {function_name}()
                 """
             ]
-            
+
             for trigger_query in triggers:
                 self.db_connection.execute_query(trigger_query, fetch_results=False)
-            
+
             self.logger.info(f"Triggers de auditoría creados para: {table_name}")
-            
+
         except Exception as e:
             raise AuditCreationError(f"Error creando triggers: {str(e)}")
     
