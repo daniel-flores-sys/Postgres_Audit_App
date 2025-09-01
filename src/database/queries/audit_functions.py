@@ -15,6 +15,7 @@ class AuditFunctions:
         """Inicializar funciones de auditoría"""
         self.db_connection = db_connection
         self.logger = logging.getLogger(__name__)
+        self.column_map = {}  # {original: encrypted}
     
     def create_base_functions(self):
         """Crear funciones base de auditoría"""
@@ -99,25 +100,16 @@ class AuditFunctions:
     def get_table_structure(self, table_name):
         """Obtener estructura de una tabla"""
         try:
-            if '.' in table_name:
-                schema, table = table_name.split('.', 1)
-            else:
-                schema = 'public'  # O el esquema por defecto de tu config
-                table = table_name
-
             query = """
-                SELECT column_name, data_type, character_maximum_length, 
-                       numeric_precision, numeric_scale, is_nullable
-                FROM information_schema.columns 
-                WHERE table_schema = %s AND table_name = %s
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = %s AND table_schema = 'public'
                 ORDER BY ordinal_position
             """
-
-            result = self.db_connection.execute_query(query, (schema, table))
+            result = self.db_connection.execute_query(query, (table_name,))
             return result
-
         except Exception as e:
-            raise AuditCreationError(f"Error obteniendo estructura de {table_name}: {str(e)}")
+            raise AuditCreationError(f"No se pudo obtener la estructura de la tabla: {str(e)}")
     
     def _get_encryption_key(self):
         """Obtener la clave de encriptación desde la base de datos"""
@@ -145,6 +137,29 @@ class AuditFunctions:
             safe = 'a_' + safe
         return safe
 
+    def _decrypt_name(self, enc_name, key):
+        import base64
+        from cryptography.hazmat.primitives import padding as crypto_padding
+
+        # Quitar prefijo si existe
+        if enc_name.startswith('a_'):
+            enc_name = enc_name[2:]
+        # Revertir guión bajo a base64
+        b64 = enc_name.replace('_', '/')
+        try:
+            encrypted = base64.b64decode(b64)
+            key_bytes = key.encode('utf-8')[:32]
+            iv = b'\x00' * 16
+            cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv))
+            decryptor = cipher.decryptor()
+            padded = decryptor.update(encrypted) + decryptor.finalize()
+            pad_len = padded[-1]
+            return padded[:-pad_len].decode('utf-8', errors='ignore')
+        except Exception as e:
+            # Si falla, devuelve el nombre encriptado y loguea el error
+            print(f"[AuditViewer] Error desencriptando nombre de columna '{enc_name}': {e}")
+            return enc_name
+
     def create_audit_table(self, original_table, audit_table_name=None, table_structure=None):
         """Crear tabla de auditoría con nombres encriptados"""
         try:
@@ -154,14 +169,17 @@ class AuditFunctions:
 
             # Todas las columnas como BYTEA
             columns = []
+            self.column_map = {}
             for column in table_structure:
                 enc_col_name = self._encrypt_name(column['column_name'], key)
+                self.column_map[column['column_name']] = enc_col_name
                 col_def = f"{enc_col_name} BYTEA"
                 columns.append(col_def)
 
             # Campos de auditoría también como BYTEA
             for extra in ['usuario_accion', 'fecha_accion', 'accion_sql']:
                 enc_extra = self._encrypt_name(extra, key)
+                self.column_map[extra] = enc_extra
                 columns.append(f"{enc_extra} BYTEA")
 
             columns_def = ',\n    '.join(columns)
@@ -359,3 +377,29 @@ class AuditFunctions:
             
         except Exception:
             return False
+            
+    def get_inverse_column_map(self):
+        """Obtener el mapeo inverso de columnas (encriptado a original)"""
+        return {v: k for k, v in self.column_map.items()}
+    
+    def decrypt_audit_row(self, row):
+        """Desencriptar una fila de auditoría"""
+        try:
+            key = self._get_encryption_key()
+            decrypted_row = {}
+            
+            for enc_col, enc_value in row.items():
+                if enc_col in ['usuario_accion', 'fecha_accion', 'accion_sql']:
+                    # Campos de auditoría
+                    dec_value = self._decrypt_name(enc_value, key)
+                else:
+                    # Otras columnas
+                    dec_value = enc_value
+                
+                decrypted_row[dec_value] = enc_value
+            
+            return decrypted_row
+        
+        except Exception as e:
+            self.logger.warning(f"Error desencriptando fila de auditoría: {str(e)}")
+            return row

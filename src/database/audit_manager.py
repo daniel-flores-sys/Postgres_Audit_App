@@ -139,7 +139,7 @@ class AuditManager:
         """Generar nombre de tabla de auditoría encriptado"""
         key = self.audit_functions._get_encryption_key()
         enc_table_name = self.audit_functions._encrypt_name(table_name, key)
-        return f"aud_{enc_table_name}"
+        return f"aud_{enc_table_name}".lower()
     
     def _get_sensitive_fields(self, table_name):
         """Obtener campos sensibles que deben encriptarse"""

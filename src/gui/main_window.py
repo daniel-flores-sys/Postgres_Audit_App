@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, scrolledtext
 from .components.connection_form import ConnectionForm
 from .components.table_selector import TableSelector
 from .components.log_viewer import LogViewer
+from .components.audit_viewer import AuditViewer
 from ..database.connection import DatabaseConnection
 from ..database.audit_manager import AuditManager
 from ..utils.logger import GUILogHandler
@@ -95,9 +96,12 @@ class MainWindow:
                   command=self._create_audit, state="disabled").pack(side="left", padx=5)
         ttk.Button(action_frame, text="Eliminar Auditoría", 
                   command=self._remove_audit, state="disabled").pack(side="left", padx=5)
+        ttk.Button(action_frame, text="Ver Auditoría", 
+                  command=self._view_audit, state="disabled").pack(side="left", padx=5)
         
         self.create_btn = action_frame.winfo_children()[0]
         self.remove_btn = action_frame.winfo_children()[1]
+        self.view_btn = action_frame.winfo_children()[2]
     
     def _create_log_tab(self):
         """Crear contenido de la pestaña de logs"""
@@ -172,9 +176,11 @@ class MainWindow:
         if selected_tables:
             self.create_btn.config(state="normal")
             self.remove_btn.config(state="normal")
+            self.view_btn.config(state="normal")
         else:
             self.create_btn.config(state="disabled")
             self.remove_btn.config(state="disabled")
+            self.view_btn.config(state="disabled")
     
     def _create_audit(self):
         """Crear auditoría para tablas seleccionadas"""
@@ -234,3 +240,13 @@ class MainWindow:
         thread = threading.Thread(target=remove_thread)
         thread.daemon = True
         thread.start()
+    
+    def _view_audit(self):
+        """Mostrar ventana de auditoría desencriptada para la tabla seleccionada"""
+        selected_tables = self.table_selector.get_selected_tables()
+        if not selected_tables:
+            messagebox.showwarning("Advertencia", "No hay tablas seleccionadas")
+            return
+        # Solo mostrar la primera seleccionada
+        table = selected_tables[0]
+        AuditViewer(self.root, table, self.audit_manager)
